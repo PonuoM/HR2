@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#141414">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="ระบบลา">
+    
+    <link rel="manifest" href="manifest.json">
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <?!= include('public/css'); ?>
+  </head>
+  <body>
+    <div id="spinner-overlay" class="spinner-overlay" style="display: none;"><div class="spinner"></div></div>
+    
+    <main class="app-container">
+      
+      <div id="login-view" style="padding-top: 50px;">
+          <div class="glass-container">
+              <h2>ระบบลางานออนไลน์</h2>
+              <input type="text" id="username" placeholder="ชื่อผู้ใช้">
+              <input type="password" id="password" placeholder="รหัสผ่าน">
+              <button onclick="handleLogin()">เข้าสู่ระบบ</button>
+              <p id="login-error" class="error-message"></p>
+          </div>
+      </div>
+
+      <div id="dashboard-view" class="glass-container" style="display:none;">
+        <div class="header-actions">
+          <div id="notification-icon-wrapper" class="notification-icon-wrapper" onclick="openNotificationInbox()">
+              <i class="fas fa-inbox"></i><span id="notification-badge" class="badge" style="display: none;"></span>
+          </div>
+           <div id="change-password-icon" class="notification-icon-wrapper" onclick="openChangePasswordModal()">
+              <i class="fas fa-key"></i>
+          </div>
+        </div>
+
+        <h3><span id="greeting-icon"></span> สวัสดี, <span id="user-fullname"></span></h3>
+        
+        <div id="view-selector">
+          <button id="btn-my-dashboard" class="view-btn active" onclick="switchView('myDashboard')"><i class="fas fa-user-circle"></i> แดชบอร์ด</button>
+          <button id="btn-leave-history" class="view-btn" onclick="switchView('leaveHistory')"><i class="fas fa-history"></i> ประวัติการลา</button>
+          <button id="btn-hr-panel" class="view-btn" style="display: none;" onclick="switchView('hrPanel')"><i class="fas fa-users-cog"></i> จัดการพนักงาน</button>
+        </div>
+
+        <div id="my-dashboard-content">
+            <div id="manager-view" class="content-card" style="display:none;">
+              <h4><i class="fas fa-clipboard-check"></i> รายการรออนุมัติ</h4>
+              <div id="manager-tasks-list"></div>
+            </div>
+            <div id="hr-view" class="content-card" style="display:none;">
+              <h4><i class="fas fa-stamp"></i> รายการรออนุมัติ (HR)</h4>
+              <div id="hr-tasks-list"></div>
+            </div>
+            <div id="employee-view">
+                <div class="content-card">
+                    <h4><i class="fas fa-chart-pie"></i> สรุปวันลา</h4>
+                    <div id="leave-balance" class="leave-balance"></div>
+                </div>
+                <div class="content-card">
+                    <h4><i class="fas fa-paper-plane"></i> ยื่นใบลาใหม่</h4>
+                    <div class="form-grid">
+                      <div><label for="leave-type">ประเภทการลา</label><select id="leave-type"><option value="LeaveVacation">ลาพักร้อน</option><option value="LeaveBusiness">ลากิจ</option><option value="LeaveSick">ลาป่วย</option></select></div>
+                      <div><label>ยอดคงเหลือ</label><input type="text" id="leave-type-balance" readonly></div>
+                    </div>
+                    <div class="form-grid">
+                      <div><label for="start-date">วันที่เริ่มลา</label><input type="date" id="start-date"></div>
+                      <div><label for="end-date">วันที่สิ้นสุดลา</label><input type="date" id="end-date"></div>
+                    </div>
+                    <label for="leave-reason">เหตุผลการลา</label>
+                    <textarea id="leave-reason" rows="3" placeholder="ระบุเหตุผล..."></textarea>
+                    <button onclick="handleSubmitLeave()" id="submit-leave-btn">ส่งใบลา</button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="leave-history-content" style="display: none;">
+            <div class="content-card">
+                <h4><i class="fas fa-history"></i> ประวัติการลาทั้งหมด</h4>
+                <div id="leave-history-list"></div>
+            </div>
+        </div>
+
+        <div id="hr-panel-content" style="display: none;">
+            <div class="content-card">
+              <div class="hr-header">
+                  <h4><i class="fas fa-users"></i> พนักงานในองค์กร</h4>
+                  <button class="btn-add-employee" onclick="openEmployeeModal(true)"><i class="fas fa-user-plus"></i> เพิ่มพนักงานใหม่</button>
+              </div>
+              <div class="filter-controls">
+                <select id="role-filter"><option value="all">ทุกตำแหน่ง</option><option value="Employee">Employee</option><option value="Supervisor">Supervisor</option><option value="Manager">Manager</option><option value="HR">HR</option></select>
+                <select id="department-filter"><option value="all">ทุกแผนก</option></select>
+              </div>
+              <div id="employee-list-for-hr"></div>
+            </div>
+        </div>
+        
+        <button onclick="handleLogout()" class="logout-btn"><i class="fas fa-sign-out-alt"></i> ออกจากระบบ</button>
+      </div>
+
+      <div id="change-password-modal" class="modal-overlay" style="display: none;">
+          <div class="modal-content">
+              <span class="modal-close" onclick="closeChangePasswordModal()">×</span>
+              <h4><i class="fas fa-lock"></i> เปลี่ยนรหัสผ่าน</h4>
+              <div id="change-password-form"></div>
+          </div>
+      </div>
+      <div id="notification-modal" class="modal-overlay" style="display: none;">
+          <div class="modal-content">
+              <span class="modal-close" onclick="closeNotificationInbox()">×</span>
+              <h4><i class="fas fa-inbox"></i> กล่องข้อความ</h4>
+              <div id="notifications-inbox-list"></div>
+          </div>
+      </div>
+      <div id="employee-modal" class="modal-overlay" style="display: none;">
+          <div class="modal-content">
+              <span class="modal-close" onclick="closeEmployeeModal()">×</span>
+              <h4 id="employee-modal-header"></h4>
+              <div id="employee-modal-form"></div>
+          </div>
+      </div>
+    </main>
+    <?!= include('public/js'); ?>
+  </body>
+</html>

@@ -1,0 +1,571 @@
+<script>
+let currentUser = {}; 
+let sessionToken = null;
+let allUserNotifications = [];
+let currentLeaveBalance = {};
+let hrManagementData = { employees: [], departments: [], managers: [] };
+
+document.addEventListener('DOMContentLoaded', () => {
+    const storedToken = localStorage.getItem('leaveAppSessionToken');
+    if (storedToken) {
+        showSpinner();
+        google.script.run
+            .withSuccessHandler(onLoginSuccess)
+            .withFailureHandler(() => { 
+                hideSpinner();
+                localStorage.removeItem('leaveAppSessionToken');
+                const loginView = document.getElementById('login-view');
+                if (loginView) loginView.style.display = 'block';
+             })
+            .checkUserSession(storedToken);
+    } else {
+        const loginView = document.getElementById('login-view');
+        if (loginView) loginView.style.display = 'block';
+    }
+    const passwordInput = document.getElementById('password');
+    if (passwordInput) {
+        passwordInput.addEventListener('keypress', e => { if (e.key === 'Enter') handleLogin(); });
+    }
+});
+
+function handleLogin() {
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
+    const loginButton = document.querySelector('#login-view button');
+    const loginError = document.getElementById('login-error');
+    if (!username || !password) {
+        loginError.textContent = "กรุณากรอกชื่อผู้ใช้และรหัสผ่าน"; return;
+    }
+    loginButton.disabled = true;
+    loginButton.textContent = 'กำลังตรวจสอบ...';
+    loginError.textContent = "";
+    showSpinner();
+    google.script.run
+        .withSuccessHandler(onLoginSuccess)
+        .withFailureHandler(onLoginFailure)
+        .loginUser(username, password);
+}
+
+function onLoginSuccess(response) {
+    hideSpinner();
+    if (response && response.isLoggedIn) {
+        currentUser = response.user;
+        sessionToken = response.sessionToken;
+        localStorage.setItem('leaveAppSessionToken', sessionToken);
+        
+        document.getElementById('login-view').style.display = 'none';
+        document.getElementById('dashboard-view').style.display = 'block';
+        
+        document.getElementById('user-fullname').textContent = currentUser.fullName;
+        document.getElementById('greeting-icon').className = `fas fa-${currentUser.role === 'HR' ? 'user-shield' : currentUser.role === 'Manager' || currentUser.role === 'Supervisor' ? 'user-tie' : 'user'}`;
+        
+        const hrButton = document.getElementById('btn-hr-panel');
+        if (currentUser.role === 'HR') {
+            hrButton.style.display = 'flex';
+        } else {
+            hrButton.style.display = 'none';
+        }
+        
+        setupEventListeners();
+        loadInitialData();
+    } else {
+        onLoginFailure({ message: response.error || "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" });
+    }
+}
+
+function onLoginFailure(error) {
+    hideSpinner();
+    const loginButton = document.querySelector('#login-view button');
+    const loginError = document.getElementById('login-error');
+    if (loginButton) {
+        loginButton.disabled = false;
+        loginButton.textContent = 'เข้าสู่ระบบ';
+    }
+    if (loginError) {
+        loginError.textContent = error.message;
+    }
+}
+
+function setupEventListeners() {
+    document.getElementById('start-date').addEventListener('change', () => {
+        const startDate = document.getElementById('start-date').value;
+        if(startDate){
+            document.getElementById('end-date').min = startDate;
+            if(!document.getElementById('end-date').value || document.getElementById('end-date').value < startDate){
+                document.getElementById('end-date').value = startDate;
+            }
+        }
+    });
+    document.getElementById('leave-type').addEventListener('change', updateLeaveBalanceDisplay);
+    document.getElementById('role-filter').addEventListener('change', applyHRFilters);
+    document.getElementById('department-filter').addEventListener('change', applyHRFilters);
+}
+
+function loadInitialData() {
+    showSpinner();
+    google.script.run.withSuccessHandler(response => {
+        hideSpinner();
+        if(response.error){ Swal.fire('เกิดข้อผิดพลาด', response.error, 'error'); return; }
+        currentLeaveBalance = response.leaveBalance;
+        renderDashboard(response);
+    }).withFailureHandler(err => { hideSpinner(); Swal.fire('ผิดพลาดรุนแรง', err.message, 'error'); }).getDashboardData(sessionToken);
+    google.script.run.withSuccessHandler(renderNotificationsBadge).getAllNotifications(sessionToken);
+}
+
+function renderDashboard(data){
+    const balanceDiv = document.getElementById('leave-balance');
+    balanceDiv.innerHTML = `
+      <div class="leave-balance-item"><div class="label">พักร้อน</div><div class="value">${data.leaveBalance.LeaveVacation.quota - data.leaveBalance.LeaveVacation.used}</div></div>
+      <div class="leave-balance-item"><div class="label">ลากิจ</div><div class="value">${data.leaveBalance.LeaveBusiness.quota - data.leaveBalance.LeaveBusiness.used}</div></div>
+      <div class="leave-balance-item"><div class="label">ลาป่วย</div><div class="value">${data.leaveBalance.LeaveSick.quota - data.leaveBalance.LeaveSick.used}</div></div>
+    `;
+    updateLeaveBalanceDisplay();
+    renderManagerTasks(data.managerTasks);
+    renderHrTasks(data.hrTasks);
+}
+
+function updateLeaveBalanceDisplay(){
+    const selectedType = document.getElementById('leave-type').value;
+    if(currentLeaveBalance && currentLeaveBalance[selectedType]){
+      const balance = currentLeaveBalance[selectedType].quota - currentLeaveBalance[selectedType].used;
+      document.getElementById('leave-type-balance').value = `${balance} วัน`;
+    }
+}
+
+function renderNotificationsBadge(notifications) {
+    allUserNotifications = notifications;
+    const unreadCount = allUserNotifications.filter(n => n.status === 'Unread').length;
+    const badge = document.getElementById('notification-badge');
+    badge.style.display = unreadCount > 0 ? 'flex' : 'none';
+    badge.textContent = unreadCount > 9 ? '9+' : unreadCount;
+}
+
+function renderManagerTasks(tasks) {
+    const managerView = document.getElementById('manager-view');
+    const listDiv = document.getElementById('manager-tasks-list');
+    listDiv.innerHTML = "";
+    if (tasks && tasks.length > 0) {
+        managerView.style.display = 'block';
+        tasks.forEach(task => { listDiv.appendChild(createApprovalCard(task, 'manager')); });
+    } else {
+        managerView.style.display = 'none';
+    }
+}
+
+function renderHrTasks(tasks) {
+    const hrView = document.getElementById('hr-view');
+    const listDiv = document.getElementById('hr-tasks-list');
+    listDiv.innerHTML = "";
+    if (tasks && tasks.length > 0) {
+        hrView.style.display = 'block';
+        tasks.forEach(task => { listDiv.appendChild(createApprovalCard(task, 'hr')); });
+    } else {
+        hrView.style.display = 'none';
+    }
+}
+
+function createApprovalCard(task, type) {
+    const card = document.createElement('div');
+    card.className = 'approval-card';
+    card.id = `card-${task.requestId}`;
+    const rejectFn = type === 'manager' ? 'rejectLeaveRequest' : 'finalizeRejection';
+    const approveFn = type === 'manager' ? 'approveLeaveRequest' : 'finalizeApproval';
+    const leaveTypeMap = {'LeaveVacation':'ลาพักร้อน', 'LeaveBusiness':'ลากิจ', 'LeaveSick':'ลาป่วย'};
+    card.innerHTML = `
+        <div class="card-header">${task.employeeName} <span>(${leaveTypeMap[task.leaveType]})</span></div>
+        <div class="card-body">
+            <p><strong><i class="fas fa-calendar-alt"></i> วันที่:</strong> ${task.startDate} - ${task.endDate} (${task.totalDays} วัน)</p>
+            <p><strong><i class="fas fa-comment"></i> เหตุผล:</strong> ${task.reason || '-'}</p>
+        </div>
+        <div class="card-actions">
+            <button class="btn-reject" onclick="handleAction('${rejectFn}', '${task.requestId}', this)"><i class="fas fa-times"></i> ปฏิเสธ</button>
+            <button class="btn-approve" onclick="handleAction('${approveFn}', '${task.requestId}', this)"><i class="fas fa-check"></i> อนุมัติ</button>
+        </div>
+    `;
+    return card;
+}
+
+function switchView(viewName) {
+    document.getElementById('my-dashboard-content').style.display = viewName === 'myDashboard' ? 'block' : 'none';
+    document.getElementById('hr-panel-content').style.display = viewName === 'hrPanel' ? 'block' : 'none';
+    document.getElementById('leave-history-content').style.display = viewName === 'leaveHistory' ? 'block' : 'none';
+    
+    document.getElementById('btn-my-dashboard').classList.toggle('active', viewName === 'myDashboard');
+    document.getElementById('btn-hr-panel').classList.toggle('active', viewName === 'hrPanel');
+    document.getElementById('btn-leave-history').classList.toggle('active', viewName === 'leaveHistory');
+    
+    if (viewName === 'hrPanel') { loadHRManagementData(); }
+    if (viewName === 'leaveHistory') { loadLeaveHistory(); }
+}
+
+function loadHRManagementData() {
+    showSpinner();
+    google.script.run
+        .withSuccessHandler(response => {
+            hideSpinner();
+            if(response.success){
+                hrManagementData = response;
+                populateDepartmentFilter(response.departments);
+                applyHRFilters(); 
+            } else { Swal.fire('ผิดพลาด', response.message, 'error'); }
+        }).withFailureHandler(err => { hideSpinner(); Swal.fire('ผิดพลาดรุนแรง', err.message, 'error'); }).getHRManagementData(sessionToken);
+}
+
+function populateDepartmentFilter(departments) {
+    const filterSelect = document.getElementById('department-filter');
+    filterSelect.innerHTML = '<option value="all">ทุกแผนก</option>'; 
+    departments.sort().forEach(dept => { filterSelect.innerHTML += `<option value="${dept}">${dept}</option>`; });
+}
+
+function applyHRFilters() {
+    const roleFilter = document.getElementById('role-filter').value;
+    const deptFilter = document.getElementById('department-filter').value;
+    const filteredEmployees = hrManagementData.employees.filter(emp => (roleFilter === 'all' || emp.Role === roleFilter) && (deptFilter === 'all' || emp.Department === deptFilter));
+    renderEmployeeList(filteredEmployees);
+}
+
+function renderEmployeeList(employees) {
+    const listDiv = document.getElementById('employee-list-for-hr');
+    let tableHTML = `<div class="table-wrapper"><table class="hr-employee-table">
+                        <thead><tr><th>ชื่อ-นามสกุล</th><th>ตำแหน่ง</th><th>แผนก</th><th>จัดการ</th></tr></thead><tbody>`;
+    if(employees.length > 0){
+        employees.forEach(emp => {
+            tableHTML += `<tr>
+                            <td>${emp.FullName}</td><td>${emp.Role}</td><td>${emp.Department || '-'}</td>
+                            <td><button class="btn-edit" onclick='openEmployeeModal(false, ${JSON.stringify(emp)})'>แก้ไข</button></td>
+                        </tr>`;
+        });
+    } else { tableHTML += `<tr><td colspan="4" style="text-align:center; opacity: 0.7;">ไม่พบข้อมูลพนักงานตามที่กรอง</td></tr>`; }
+    tableHTML += '</tbody></table></div>';
+    listDiv.innerHTML = tableHTML;
+}
+
+function createEmployeeFormHTML(isNew, employee = {}) {
+    let deptOptions = hrManagementData.departments.map(d => `<option value="${d}" ${employee.Department === d ? 'selected': ''}>${d}</option>`).join('');
+    
+    return `
+      ${isNew ? `
+        <div class="form-grid">
+            <div><label>รหัสพนักงาน (ID):</label><input type="text" id="emp-id" placeholder="e.g., EMP008"></div>
+            <div><label>Username (สำหรับ Login):</label><input type="text" id="emp-username" placeholder="e.g., first.l"></div>
+        </div>` : ''}
+      <label>ชื่อ-นามสกุล:</label><input type="text" id="emp-fullname" value="${employee.FullName || ''}">
+      <div class="form-grid">
+          <div><label>ตำแหน่ง:</label><select id="emp-role">
+              <option value="Employee">Employee</option><option value="Supervisor">Supervisor</option>
+              <option value="Manager">Manager</option><option value="HR">HR</option>
+          </select></div>
+          <div><label>แผนก:</label><select id="emp-department" onchange="setupDynamicManagerDropdown(this.value, '')"><option value="">--เลือกแผนก--</option>${deptOptions}</select></div>
+      </div>
+      <label>หัวหน้า (ManagerID):</label><select id="emp-managerid"></select>
+      <hr class="form-divider">
+      <div class="form-grid">
+          <div><label>โควต้าลาป่วย:</label><input type="number" id="emp-sick" value="${employee.LeaveSickQuota || 30}"></div>
+          <div><label>โควต้าลากิจ:</label><input type="number" id="emp-business" value="${employee.LeaveBusinessQuota || 7}"></div>
+          <div><label>โควต้าลาพักร้อน:</label><input type="number" id="emp-vacation" value="${employee.LeaveVacationQuota || 6}"></div>
+      </div>
+      <button onclick="${isNew ? 'executeAddNewEmployee()' : `executeSaveEmployeeData('${employee.EmployeeID}')`}">
+        <i class="fas fa-save"></i> ${isNew ? 'เพิ่มพนักงาน' : 'บันทึกการเปลี่ยนแปลง'}
+      </button>
+    `;
+}
+
+function setupDynamicManagerDropdown(selectedDept, selectedManager) {
+    const managerSelect = document.getElementById('emp-managerid');
+    managerSelect.innerHTML = '<option value="">ไม่มี</option>';
+    hrManagementData.managers
+        .filter(m => m.department === selectedDept)
+        .forEach(m => { managerSelect.innerHTML += `<option value="${m.id}" ${m.id === selectedManager ? 'selected' : ''}>${m.name}</option>`; });
+}
+
+function openEmployeeModal(isNew, employee = {}) {
+    document.getElementById('employee-modal-header').innerText = isNew ? "เพิ่มพนักงานใหม่" : `แก้ไขข้อมูล: ${employee.FullName}`;
+    document.getElementById('employee-modal-form').innerHTML = createEmployeeFormHTML(isNew, employee);
+    document.getElementById('employee-modal').style.display = 'flex';
+    
+    if(!isNew) {
+        document.getElementById('emp-role').value = employee.Role;
+        document.getElementById('emp-department').value = employee.Department;
+        setupDynamicManagerDropdown(employee.Department, employee.ManagerID);
+    }
+}
+function openAddEmployeeModal() { openEmployeeModal(true); }
+
+function closeEmployeeModal() { document.getElementById('employee-modal').style.display = 'none'; }
+
+function executeSaveEmployeeData(employeeId) { 
+    const updatedData = {
+        EmployeeID: employeeId,
+        FullName: document.getElementById('emp-fullname').value,
+        Role: document.getElementById('emp-role').value,
+        Department: document.getElementById('emp-department').value,
+        ManagerID: document.getElementById('emp-managerid').value,
+        LeaveSickQuota: document.getElementById('emp-sick').value,
+        LeaveBusinessQuota: document.getElementById('emp-business').value,
+        LeaveVacationQuota: document.getElementById('emp-vacation').value
+    };
+    showSpinner();
+    google.script.run
+      .withSuccessHandler(response => {
+          hideSpinner();
+          Swal.fire({icon: response.success ? 'success' : 'error', text: response.message, timer: 2500, showConfirmButton: false});
+          if(response.success){
+              closeEmployeeModal();
+              loadHRManagementData();
+          }
+      }).withFailureHandler(err => {
+          hideSpinner(); Swal.fire('ผิดพลาดรุนแรง', err.message, 'error');
+      }).updateEmployeeData(sessionToken, updatedData);
+}
+
+function executeAddNewEmployee() { 
+    const newData = {
+        EmployeeID: document.getElementById('emp-id').value,
+        Username: document.getElementById('emp-username').value,
+        FullName: document.getElementById('emp-fullname').value,
+        Role: document.getElementById('emp-role').value,
+        Department: document.getElementById('emp-department').value,
+        ManagerID: document.getElementById('emp-managerid').value,
+        LeaveSickQuota: document.getElementById('emp-sick').value,
+        LeaveBusinessQuota: document.getElementById('emp-business').value,
+        LeaveVacationQuota: document.getElementById('emp-vacation').value
+    };
+    if(!newData.EmployeeID || !newData.Username || !newData.FullName){
+        Swal.fire('ข้อมูลไม่ครบ', 'กรุณากรอกรหัสพนักงาน, Username, และชื่อ-นามสกุล', 'warning'); return;
+    }
+    showSpinner();
+    google.script.run.withSuccessHandler(response => {
+        hideSpinner();
+        Swal.fire({
+            icon: response.success ? 'success' : 'error',
+            title: response.success ? 'เพิ่มพนักงานสำเร็จ!' : 'ผิดพลาด',
+            html: response.message.replace(/\n/g, '<br>'),
+        });
+        if(response.success){
+            closeEmployeeModal();
+            loadHRManagementData();
+        }
+    }).withFailureHandler(err => {
+        hideSpinner(); Swal.fire('ผิดพลาดรุนแรง', err.message, 'error');
+    }).addNewEmployee(sessionToken, newData);
+}
+
+function handleAction(actionFunction, requestId, buttonElement) {
+    showSpinner();
+    const cardActions = buttonElement.parentElement;
+    Array.from(cardActions.children).forEach(btn => btn.disabled = true);
+    google.script.run
+        .withSuccessHandler(response => {
+            hideSpinner();
+            if (response.success) {
+                Swal.fire({ icon: 'success', title: 'สำเร็จ', text: response.message, timer: 2000, showConfirmButton: false });
+                document.getElementById(`card-${requestId}`).remove();
+                loadInitialData(); 
+            } else {
+                Swal.fire('ผิดพลาด', response.message, 'error');
+                Array.from(cardActions.children).forEach(btn => btn.disabled = false);
+            }
+        }).withFailureHandler(err => {
+            hideSpinner(); Swal.fire('ผิดพลาดรุนแรง', err.message, 'error');
+            Array.from(cardActions.children).forEach(btn => btn.disabled = false);
+        })[actionFunction](sessionToken, requestId);
+}
+
+function handleSubmitLeave() {
+    const submitBtn = document.getElementById('submit-leave-btn');
+    const leaveData = {
+        leaveType: document.getElementById('leave-type').value, startDate: document.getElementById('start-date').value,
+        endDate: document.getElementById('end-date').value, reason: document.getElementById('leave-reason').value
+    };
+    if (!leaveData.startDate || !leaveData.endDate || !leaveData.reason) {
+        Swal.fire('ข้อมูลไม่ครบ', 'กรุณากรอกข้อมูลการลาให้ครบถ้วน', 'warning'); return;
+    }
+    if (new Date(leaveData.endDate) < new Date(leaveData.startDate)) {
+        Swal.fire('วันที่ไม่ถูกต้อง', 'วันที่สิ้นสุดต้องไม่มาก่อนวันที่เริ่ม', 'warning'); return;
+    }
+    showSpinner();
+    submitBtn.disabled = true;
+    google.script.run
+        .withSuccessHandler(onSubmitSuccess)
+        .withFailureHandler(onSubmitFailure)
+        .submitLeaveRequest(sessionToken, leaveData);
+}
+
+function onSubmitSuccess(response) {
+    hideSpinner();
+    document.getElementById('submit-leave-btn').disabled = false;
+    if (response.success) {
+        Swal.fire({ icon: 'success', title: 'สำเร็จ', text: response.message, timer: 2500, showConfirmButton: false });
+        document.getElementById('leave-form-container').querySelector('form').reset();
+        loadInitialData();
+    } else {
+        Swal.fire('ผิดพลาด', response.message, 'error');
+    }
+}
+function onSubmitFailure(error) {
+    hideSpinner();
+    document.getElementById('submit-leave-btn').disabled = false;
+    Swal.fire('ผิดพลาดรุนแรง', error.message, 'error');
+}
+
+function handleLogout() {
+    showSpinner();
+    google.script.run.withSuccessHandler(onLogoutSuccess).logoutUser(sessionToken);
+}
+function onLogoutSuccess(){
+    localStorage.removeItem('leaveAppSessionToken');
+    google.script.run.withSuccessHandler(url => { window.top.location.replace(url); }).getScriptUrl();
+}
+
+function openNotificationInbox() {
+    const inboxList = document.getElementById('notifications-inbox-list');
+    inboxList.innerHTML = '';
+    if (allUserNotifications.length === 0) {
+        inboxList.innerHTML = '<p style="opacity: 0.7; text-align:center;">ไม่มีข้อความในกล่องจดหมาย</p>';
+    } else {
+        allUserNotifications.forEach(n => {
+            const item = document.createElement('div');
+            item.className = `notification-item-inbox ${n.status.toLowerCase()}`;
+            item.innerHTML = `<div class="msg-content">${n.message}</div><div class="msg-date">${n.createdDate}</div>`;
+            inboxList.appendChild(item);
+        });
+    }
+    document.getElementById('notification-modal').style.display = 'flex';
+    const unreadIds = allUserNotifications.filter(n => n.status === 'Unread').map(n => n.notificationId);
+    if (unreadIds.length > 0) {
+        google.script.run
+            .withSuccessHandler(() => {
+                document.getElementById('notification-badge').style.display = 'none';
+                allUserNotifications.forEach(n => { if (unreadIds.includes(n.notificationId)) n.status = 'Read'; });
+            })
+            .markNotificationsAsRead(sessionToken, unreadIds);
+    }
+}
+
+function closeNotificationInbox() {
+    document.getElementById('notification-modal').style.display = 'none';
+}
+
+function showSpinner() { 
+    const spinner = document.getElementById('spinner-overlay');
+    if (spinner) spinner.style.display = 'flex'; 
+}
+
+function hideSpinner() { 
+    const spinner = document.getElementById('spinner-overlay');
+    if (spinner) spinner.style.display = 'none';
+}
+
+function handleAction(actionFunction, requestId, buttonElement) {
+    showSpinner();
+    const cardActions = buttonElement.parentElement;
+    Array.from(cardActions.children).forEach(btn => btn.disabled = true);
+
+    google.script.run
+        .withSuccessHandler(response => {
+            hideSpinner();
+            if (response.success) {
+                Swal.fire({ icon: 'success', title: 'สำเร็จ', text: response.message, timer: 2000, showConfirmButton: false });
+                document.getElementById(`card-${requestId}`).remove();
+                loadInitialData(); 
+            } else {
+                Swal.fire('ผิดพลาด', response.message, 'error');
+                Array.from(cardActions.children).forEach(btn => btn.disabled = false);
+            }
+        })
+        .withFailureHandler(err => {
+            hideSpinner();
+            Swal.fire('ผิดพลาดรุนแรง', err.message, 'error');
+            Array.from(cardActions.children).forEach(btn => btn.disabled = false);
+        })
+        [actionFunction](sessionToken, requestId);
+}
+
+function showSpinner() { 
+    const spinner = document.getElementById('spinner-overlay');
+    if (spinner) spinner.style.display = 'flex'; 
+}
+
+function hideSpinner() { 
+    const spinner = document.getElementById('spinner-overlay');
+    if (spinner) spinner.style.display = 'none';
+}
+
+// ฟังก์ชันใหม่
+function openChangePasswordModal() {
+    document.getElementById('change-password-form').innerHTML = `
+      <label>รหัสผ่านปัจจุบัน</label><input type="password" id="old-password">
+      <label>รหัสผ่านใหม่</label><input type="password" id="new-password">
+      <label>ยืนยันรหัสผ่านใหม่</label><input type="password" id="confirm-password">
+      <button onclick="executeChangePassword()"><i class="fas fa-save"></i> บันทึกรหัสผ่านใหม่</button>
+    `;
+    document.getElementById('change-password-modal').style.display = 'flex';
+}
+
+function closeChangePasswordModal() { document.getElementById('change-password-modal').style.display = 'none'; }
+
+function executeChangePassword() {
+    const oldPassword = document.getElementById('old-password').value;
+    const newPassword = document.getElementById('new-password').value;
+    const confirmPassword = document.getElementById('confirm-password').value;
+
+    if (!oldPassword || !newPassword || !confirmPassword) {
+        Swal.fire('ข้อมูลไม่ครบ', 'กรุณากรอกข้อมูลให้ครบทุกช่อง', 'warning'); return;
+    }
+    if (newPassword !== confirmPassword) {
+        Swal.fire('รหัสผ่านไม่ตรงกัน', 'กรุณากรอกรหัสผ่านใหม่และยืนยันให้ตรงกัน', 'warning'); return;
+    }
+    if (newPassword.length < 6) {
+        Swal.fire('รหัสผ่านสั้นไป', 'รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 6 ตัวอักษร', 'warning'); return;
+    }
+    
+    showSpinner();
+    google.script.run
+        .withSuccessHandler(response => {
+            hideSpinner();
+            Swal.fire({ icon: response.success ? 'success' : 'error', text: response.message, timer: 2500, showConfirmButton: false });
+            if (response.success) {
+                closeChangePasswordModal();
+            }
+        }).withFailureHandler(err => {
+            hideSpinner(); Swal.fire('ผิดพลาดรุนแรง', err.message, 'error');
+        }).changeUserPassword(sessionToken, oldPassword, newPassword);
+}
+
+function loadLeaveHistory() {
+    showSpinner();
+    google.script.run
+        .withSuccessHandler(response => {
+            hideSpinner();
+            if(response.success){
+                renderLeaveHistory(response.history);
+            } else { Swal.fire('ผิดพลาด', 'ไม่สามารถโหลดประวัติการลาได้', 'error'); }
+        }).withFailureHandler(err => {
+            hideSpinner(); Swal.fire('ผิดพลาดรุนแรง', err.message, 'error');
+        }).getLeaveHistory(sessionToken);
+}
+
+function renderLeaveHistory(history) {
+    const listDiv = document.getElementById('leave-history-list');
+    let tableHTML = `<div class="table-wrapper"><table class="leave-history-table">
+                        <thead><tr><th>วันที่ยื่นเรื่อง</th><th>ประเภท</th><th>ช่วงวันที่ลา</th><th>จำนวนวัน</th><th>สถานะ</th></tr></thead><tbody>`;
+    if(history.length > 0) {
+        history.forEach(item => {
+            const statusClass = item.statusClass.includes('Pending') ? 'Pending' : item.statusClass;
+            tableHTML += `<tr>
+                <td>${item.requestDate}</td>
+                <td>${item.leaveType}</td>
+                <td>${item.startDate} - ${item.endDate}</td>
+                <td>${item.totalDays}</td>
+                <td><span class="status-badge status-${statusClass}">${item.status}</span></td>
+            </tr>`;
+        });
+    } else {
+        tableHTML += `<tr><td colspan="5" style="text-align:center; opacity:0.7;">ไม่มีประวัติการลา</td></tr>`;
+    }
+    tableHTML += '</tbody></table></div>';
+    listDiv.innerHTML = tableHTML;
+}
+
+
+</script>
